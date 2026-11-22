@@ -621,11 +621,17 @@
       fsStatusBadge.className = 'badge';
     }
     if (fsBtnText) {
-      fsBtnText.textContent = 'Link Save File (Chrome/Edge)';
+      fsBtnText.textContent = 'Link Save File (Not Supported on iOS)';
     }
     if (fsLinkBtn) {
       fsLinkBtn.disabled = true;
-      fsLinkBtn.title = 'Direct file linking is not supported by this browser (e.g., iOS Safari). Use Save Backup or QR Sync instead.';
+      fsLinkBtn.setAttribute('disabled', 'true');
+      fsLinkBtn.classList.add('btn-disabled');
+      fsLinkBtn.title = 'Direct file access is restricted by Apple on iOS browsers. Use Save Backup or QR Code Sync below instead.';
+    }
+    const fsDesc = document.querySelector('#fs-card .section-desc');
+    if (fsDesc) {
+      fsDesc.textContent = 'Direct file writing is not supported by iOS browsers (Apple restricts background filesystem access). Use Save Backup or QR Code Sync below to keep your data safe and transfer between devices.';
     }
   }
 

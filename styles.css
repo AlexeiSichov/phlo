@@ -680,6 +680,20 @@ button, label, input {
   border-color: var(--accent-light);
 }
 
+/* Disabled button styles */
+.btn:disabled,
+.btn[disabled],
+.btn.btn-disabled {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
+  background-color: #F3EAE8 !important;
+  border-color: #E2D7D5 !important;
+  color: var(--text-muted) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
 .btn-danger {
   background: #FEE2E2;
   color: #DC2626;
