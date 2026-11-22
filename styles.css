@@ -367,6 +367,9 @@ body {
   font-weight: 700;
   color: var(--text-primary);
   padding: 4px 0 2px 2px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .history-empty-notice {

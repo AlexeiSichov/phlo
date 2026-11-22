@@ -387,6 +387,15 @@
   }
 
   // --- Scrollable History Calendar Rendering ---
+  function scrollToCurrentHistoryMonth() {
+    if (!historyCalendarScroll) return;
+    const curBlock = document.getElementById('history-month-current');
+    if (curBlock) {
+      const targetTop = curBlock.offsetTop - historyCalendarScroll.offsetTop;
+      historyCalendarScroll.scrollTop = targetTop;
+    }
+  }
+
   function renderHistoryCalendar() {
     if (!historyCalendarScroll) return;
     historyCalendarScroll.innerHTML = '';
@@ -395,42 +404,35 @@
     const currentYear = today.getFullYear();
     const currentMonth = today.getMonth();
 
-    // Determine range of months
-    let startYear = currentYear;
-    let startMonth = currentMonth;
-
+    // Determine past months limit: at least 12 months back, or earlier if older periods exist
+    let pastLimitDate = new Date(currentYear, currentMonth - 12, 1);
     if (periods.length > 0) {
       const earliestPeriodStr = periods[periods.length - 1]; // sorted descending
-      const earliest = parseDateISO(earliestPeriodStr);
-      startYear = earliest.getFullYear();
-      startMonth = earliest.getMonth();
+      const earliestDate = parseDateISO(earliestPeriodStr);
+      const earliestMonthStart = new Date(earliestDate.getFullYear(), earliestDate.getMonth() - 1, 1);
+      if (earliestMonthStart < pastLimitDate) {
+        pastLimitDate = earliestMonthStart;
+      }
     } else {
-      const past = new Date(currentYear, currentMonth - 2, 1);
-      startYear = past.getFullYear();
-      startMonth = past.getMonth();
-
       const notice = document.createElement('div');
       notice.className = 'history-empty-notice';
       notice.innerHTML = '<strong>No periods logged yet.</strong><br>Tap the + button to log your first period.';
       historyCalendarScroll.appendChild(notice);
     }
 
-    const monthsToRender = [];
-    let curY = currentYear;
-    let curM = currentMonth;
-    let count = 0;
+    // Determine future months limit: 12 months into the future
+    const futureLimitDate = new Date(currentYear, currentMonth + 12, 1);
 
-    while (count < 24) {
-      monthsToRender.push({ year: curY, month: curM });
-      if (curY < startYear || (curY === startYear && curM <= startMonth)) {
-        if (monthsToRender.length >= 3) break;
-      }
-      curM--;
-      if (curM < 0) {
-        curM = 11;
-        curY--;
-      }
-      count++;
+    // Build months list in chronological order (past at top, future at bottom)
+    const monthsToRender = [];
+    let iter = new Date(pastLimitDate.getFullYear(), pastLimitDate.getMonth(), 1);
+    while (iter <= futureLimitDate) {
+      monthsToRender.push({
+        year: iter.getFullYear(),
+        month: iter.getMonth(),
+        isCurrent: iter.getFullYear() === currentYear && iter.getMonth() === currentMonth
+      });
+      iter.setMonth(iter.getMonth() + 1);
     }
 
     const monthNames = [
@@ -438,13 +440,20 @@
       'July', 'August', 'September', 'October', 'November', 'December'
     ];
 
-    monthsToRender.forEach(({ year, month }) => {
+    monthsToRender.forEach(({ year, month, isCurrent }) => {
       const block = document.createElement('div');
       block.className = 'history-month-block';
+      if (isCurrent) {
+        block.id = 'history-month-current';
+      }
 
       const title = document.createElement('div');
       title.className = 'history-month-title';
-      title.textContent = `${monthNames[month]} ${year}`;
+      if (isCurrent) {
+        title.innerHTML = `${monthNames[month]} ${year} <span class="today-tag">Current</span>`;
+      } else {
+        title.textContent = `${monthNames[month]} ${year}`;
+      }
       block.appendChild(title);
 
       const weekdays = document.createElement('div');
@@ -554,6 +563,12 @@
     fabHistoryCalendarBtn.addEventListener('click', () => {
       renderHistoryCalendar();
       historyModal.classList.add('active');
+      // Scroll to current month immediately and during animation
+      requestAnimationFrame(() => {
+        scrollToCurrentHistoryMonth();
+        setTimeout(scrollToCurrentHistoryMonth, 50);
+        setTimeout(scrollToCurrentHistoryMonth, 220);
+      });
     });
   }
 
