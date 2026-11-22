@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#FFF5F5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Phlo">
+  <meta name="description" content="A minimalist, private, offline-first cycle tracker.">
+  <title>Phlo — Minimal Cycle Tracker</title>
+  
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" href="icons/icon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Navigation Bar -->
+    <header class="top-bar">
+      <button id="menu-btn" class="icon-btn" aria-label="Open Settings and Backup Menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+      </button>
+      <div class="brand-title">phlo</div>
+      <div class="header-placeholder" aria-hidden="true"></div>
+    </header>
+
+    <!-- Main Cycle Display -->
+    <main class="main-content">
+      <div class="cycle-orb-container">
+        <div class="cycle-pulse-ring"></div>
+        <div class="cycle-orb" id="cycle-orb">
+          <span class="cycle-label" id="cycle-label">Cycle Day</span>
+          <span class="cycle-number" id="cycle-number">—</span>
+          <span class="cycle-subtext" id="cycle-subtext">Tap + to log your period</span>
+        </div>
+      </div>
+      
+      <!-- Quick Cycle Status Pill -->
+      <div class="status-pill" id="status-pill">
+        <span class="status-dot"></span>
+        <span id="status-pill-text">No period logged yet</span>
+      </div>
+    </main>
+
+    <!-- Floating Action Button (+) -->
+    <button id="fab-add-period" class="fab" aria-label="Track period in calendar">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Calendar Bottom Sheet / Modal -->
+  <div class="modal-backdrop" id="calendar-modal" aria-hidden="true">
+    <div class="modal-sheet calendar-sheet" role="dialog" aria-modal="true" aria-labelledby="cal-month-year">
+      <div class="sheet-handle"></div>
+      
+      <div class="calendar-header">
+        <button id="cal-prev" class="icon-btn-sm" aria-label="Previous month">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+        </button>
+        <div class="cal-title-wrap">
+          <h2 id="cal-month-year" class="cal-title">November 2026</h2>
+          <button id="cal-today-btn" class="today-tag">Today</button>
+        </div>
+        <button id="cal-next" class="icon-btn-sm" aria-label="Next month">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Days of week -->
+      <div class="weekdays-grid">
+        <span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span>
+      </div>
+
+      <!-- Calendar Days Grid -->
+      <div class="days-grid" id="days-grid"></div>
+
+      <!-- Calendar Legend & Close -->
+      <div class="calendar-footer">
+        <div class="calendar-legend">
+          <span class="legend-chip legend-period"></span>
+          <span class="legend-text">5-day period highlight</span>
+        </div>
+        <button id="cal-close-btn" class="btn btn-secondary">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirmation Dialog Modal -->
+  <div class="modal-backdrop" id="confirm-modal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div class="confirm-icon-wrap" id="confirm-icon-wrap">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#E11D48" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+        </svg>
+      </div>
+      <h3 id="confirm-title" class="confirm-title">Log Period Start</h3>
+      <p id="confirm-message" class="confirm-message">Set this day as the first day of your period?</p>
+      
+      <div class="modal-actions">
+        <button id="confirm-cancel-btn" class="btn btn-secondary">Cancel</button>
+        <button id="confirm-ok-btn" class="btn btn-primary">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sidebar / Drawer Menu (Settings, Persistence & Cross-device Sync) -->
+  <div class="modal-backdrop" id="drawer-backdrop" aria-hidden="true">
+    <nav class="drawer" id="side-drawer" role="navigation" aria-label="App Menu">
+      <div class="drawer-header">
+        <div class="drawer-title-wrap">
+          <h2 class="drawer-title">Phlo Backup & Data</h2>
+          <span class="drawer-subtitle">100% private, on your device</span>
+        </div>
+        <button id="drawer-close-btn" class="icon-btn-sm" aria-label="Close menu">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <div class="drawer-content">
+        <!-- Persistence Status -->
+        <div class="section-card">
+          <div class="section-card-header">
+            <div class="card-title">Browser Storage Status</div>
+            <span class="badge" id="storage-status-badge">Protected</span>
+          </div>
+          <p class="section-desc">
+            Data is stored in your device's persistent storage. If you clear browser history or site data, use the options below to keep it safe.
+          </p>
+        </div>
+
+        <!-- Auto File Link (File System Access API) -->
+        <div class="section-card" id="fs-card">
+          <div class="section-card-header">
+            <div class="card-title">Direct Local Save File</div>
+            <span class="badge badge-accent" id="fs-status-badge">Not Linked</span>
+          </div>
+          <p class="section-desc">
+            Link a backup file on your device once. Every time you log or remove a period, this file is automatically updated in real-time.
+          </p>
+          <button id="fs-link-btn" class="btn btn-outline btn-full">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+            <span id="fs-btn-text">Choose / Create Save File</span>
+          </button>
+        </div>
+
+        <!-- Manual Backup & Load -->
+        <div class="section-card">
+          <div class="card-title">Backup & Restore</div>
+          <p class="section-desc">Download a backup file or restore from a previously saved JSON file.</p>
+          <div class="action-grid">
+            <button id="export-json-btn" class="btn btn-outline">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              Save Backup
+            </button>
+            <label class="btn btn-outline file-label" for="import-file-input">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+              Load File
+            </label>
+            <input type="file" id="import-file-input" accept=".json,application/json" style="display:none;">
+          </div>
+        </div>
+
+        <!-- Cross-Device Sync (QR Code & Instant Link) -->
+        <div class="section-card">
+          <div class="card-title">Sync Across Devices</div>
+          <p class="section-desc">
+            Sync your data instantly between phone and laptop without an account or database.
+          </p>
+          <div class="action-grid">
+            <button id="show-qr-btn" class="btn btn-outline">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
+              QR Code Sync
+            </button>
+            <button id="copy-sync-link-btn" class="btn btn-outline">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+              Copy Sync Link
+            </button>
+          </div>
+        </div>
+
+        <!-- Export to Calendar (.ics) -->
+        <div class="section-card">
+          <div class="card-title">Export to Phone Calendar</div>
+          <p class="section-desc">
+            Add your period history to Apple Calendar, Google Calendar, or Outlook as an .ics file.
+          </p>
+          <button id="export-ics-btn" class="btn btn-outline btn-full">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+            Export .ics Calendar
+          </button>
+        </div>
+
+        <!-- Logged Periods History -->
+        <div class="section-card">
+          <div class="card-title">Period Log History</div>
+          <div id="periods-history-list" class="history-list">
+            <div class="empty-state">No period start dates recorded yet.</div>
+          </div>
+        </div>
+
+        <!-- Danger zone -->
+        <div class="section-card danger-card">
+          <button id="clear-all-data-btn" class="btn btn-danger btn-full">Clear All Data</button>
+        </div>
+      </div>
+    </nav>
+  </div>
+
+  <!-- QR Code Modal -->
+  <div class="modal-backdrop" id="qr-modal" aria-hidden="true">
+    <div class="modal-card qr-card" role="dialog" aria-modal="true" aria-labelledby="qr-modal-title">
+      <h3 id="qr-modal-title" class="confirm-title">Device Sync QR Code</h3>
+      <p class="confirm-message">Scan this with your phone's camera to instantly open and sync your data.</p>
+      
+      <div id="qr-code-display" class="qr-container"></div>
+      
+      <div class="modal-actions">
+        <button id="qr-close-btn" class="btn btn-secondary btn-full">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="qrcode.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
