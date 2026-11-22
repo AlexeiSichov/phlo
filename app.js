@@ -23,6 +23,7 @@
   const cycleLabelEl = document.getElementById('cycle-label');
   const cycleSubtextEl = document.getElementById('cycle-subtext');
   const statusPillTextEl = document.getElementById('status-pill-text');
+  const recentCyclesListEl = document.getElementById('recent-cycles-list');
   const fabAddPeriodBtn = document.getElementById('fab-add-period');
   const fabHistoryCalendarBtn = document.getElementById('fab-history-calendar');
 
@@ -135,6 +136,12 @@
     return Math.round((parseDateUTC(dateStr1) - parseDateUTC(dateStr2)) / msPerDay);
   }
 
+  function addDays(isoStr, numDays) {
+    const [y, m, d] = isoStr.split('-').map(Number);
+    const dt = new Date(y, m - 1, d + numDays);
+    return formatDateISO(dt);
+  }
+
   // --- IndexedDB Simple Key-Value Store ---
   function getDB() {
     return new Promise((resolve, reject) => {
@@ -205,8 +212,12 @@
       await writeToFileHandle(activeFileHandle, periods);
     }
 
+    // 4. Update Live URL Hash for automatic bookmark sync
+    updateLiveUrlHash();
+
     // Refresh UI
     updateCycleDisplay();
+    renderRecentCycles();
     renderCalendar();
     renderHistoryCalendar();
   }
@@ -233,7 +244,7 @@
     // Check for linked file handle
     await restoreFileHandle();
 
-    // Check URL Hash for Cross-device sync data
+    // Check URL Hash for Cross-device sync or bookmark data
     checkUrlSync();
 
     // Request persistent storage
@@ -247,8 +258,103 @@
     }
 
     updateCycleDisplay();
+    renderRecentCycles();
     renderCalendar();
     renderHistoryCalendar();
+  }
+
+  // --- Live URL Bookmark Hash Updating ---
+  function updateLiveUrlHash() {
+    if (periods && periods.length > 0) {
+      const jsonStr = JSON.stringify(periods);
+      const encoded = encodeURIComponent(btoa(jsonStr));
+      history.replaceState(null, '', window.location.pathname + `#data=${encoded}`);
+    } else {
+      history.replaceState(null, '', window.location.pathname);
+    }
+  }
+
+  // --- Render 10 Last Periods / Cycles on Main Page ---
+  function renderRecentCycles() {
+    if (!recentCyclesListEl) return;
+    recentCyclesListEl.innerHTML = '';
+
+    if (periods.length === 0) {
+      recentCyclesListEl.innerHTML = '<div class="recent-cycles-empty">No cycle history yet. Tap + to log your period.</div>';
+      return;
+    }
+
+    const todayStr = getTodayISO();
+    const count = Math.min(periods.length, 10);
+
+    for (let i = 0; i < count; i++) {
+      const startISO = periods[i];
+      let endText = '';
+      let isCurrent = false;
+      let days = 0;
+
+      if (i === 0) {
+        // Most recent period
+        if (startISO <= todayStr) {
+          isCurrent = true;
+          endText = 'Ongoing';
+          days = daysDifference(todayStr, startISO) + 1;
+        } else {
+          // Future period
+          endText = 'Upcoming';
+          days = daysDifference(startISO, todayStr);
+        }
+      } else {
+        // Completed cycle
+        const nextPeriodStart = periods[i - 1];
+        days = daysDifference(nextPeriodStart, startISO);
+        const endISO = addDays(nextPeriodStart, -1);
+        endText = formatDisplayDate(endISO);
+      }
+
+      // Proportional bar width (28-35 days standard cycle, clamp 14% to 100%)
+      const barPercent = Math.min(100, Math.max(14, (days / 35) * 100));
+
+      const card = document.createElement('div');
+      card.className = 'cycle-row-card';
+
+      const datesRow = document.createElement('div');
+      datesRow.className = 'cycle-row-dates';
+
+      const startSpan = document.createElement('span');
+      startSpan.className = 'cycle-date-start';
+      startSpan.textContent = formatDisplayDate(startISO);
+
+      const endSpan = document.createElement('span');
+      endSpan.className = `cycle-date-end ${isCurrent ? 'is-current' : ''}`;
+      endSpan.textContent = endText;
+
+      datesRow.appendChild(startSpan);
+      datesRow.appendChild(endSpan);
+
+      const barWrap = document.createElement('div');
+      barWrap.className = 'cycle-row-bar-wrap';
+
+      const track = document.createElement('div');
+      track.className = 'cycle-bar-track';
+
+      const fill = document.createElement('div');
+      fill.className = `cycle-bar-fill ${isCurrent ? 'is-ongoing' : ''}`;
+      fill.style.width = `${barPercent}%`;
+      track.appendChild(fill);
+
+      const daysSpan = document.createElement('span');
+      daysSpan.className = 'cycle-days-count';
+      daysSpan.textContent = `${days} day${days === 1 ? '' : 's'}`;
+
+      barWrap.appendChild(track);
+      barWrap.appendChild(daysSpan);
+
+      card.appendChild(datesRow);
+      card.appendChild(barWrap);
+
+      recentCyclesListEl.appendChild(card);
+    }
   }
 
   // --- Cycle Day Calculation & Flo-style UI Update ---
@@ -658,8 +764,14 @@
       fsStatusBadge.textContent = filename ? `Linked: ${filename}` : 'Not Linked';
       fsStatusBadge.className = filename ? 'badge badge-success' : 'badge badge-accent';
     }
-    if (fsBtnText) {
-      fsBtnText.textContent = filename ? `Update Save File (${filename})` : 'Link Save File';
+    if (fsBtnText && fsLinkBtn) {
+      if (filename) {
+        fsBtnText.textContent = 'Unlink';
+        fsLinkBtn.className = 'btn btn-danger btn-full';
+      } else {
+        fsBtnText.textContent = 'Link Save File';
+        fsLinkBtn.className = 'btn btn-outline btn-full';
+      }
     }
   }
 
@@ -682,6 +794,18 @@
 
   if (fsLinkBtn && hasFSA) {
     fsLinkBtn.addEventListener('click', async () => {
+      // If already linked, clicking this button unlinks it
+      if (activeFileHandle) {
+        if (confirm(`Unlink save file (${activeFileHandle.name})? Your cycle history will remain safely stored in browser memory, but future changes will no longer write to this file.`)) {
+          activeFileHandle = null;
+          await idbSet('file_handle', null);
+          updateFsBadge(null);
+          showToast('Save file unlinked.');
+        }
+        return;
+      }
+
+      // If not linked, pick and link a file
       try {
         const handle = await window.showSaveFilePicker({
           suggestedName: 'phlo-data.json',
@@ -829,7 +953,38 @@
 
   function checkUrlSync() {
     const hash = window.location.hash;
-    if (hash && hash.startsWith('#sync=')) {
+    if (!hash) return;
+
+    // 1. Live Bookmark Data (#data=...)
+    if (hash.startsWith('#data=')) {
+      try {
+        const raw = hash.replace('#data=', '');
+        const decodedStr = atob(decodeURIComponent(raw));
+        const imported = JSON.parse(decodedStr);
+
+        if (Array.isArray(imported) && imported.length > 0) {
+          // If browser storage was cleared or empty, restore automatically from bookmark!
+          if (periods.length === 0) {
+            periods = sortPeriods(imported);
+            saveState();
+            showToast(`Restored ${periods.length} cycles from bookmarked URL!`);
+          } else {
+            // Merge with local storage
+            const merged = sortPeriods([...periods, ...imported]);
+            if (merged.length !== periods.length) {
+              periods = merged;
+              saveState();
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to parse #data hash', e);
+      }
+      return;
+    }
+
+    // 2. Cross-Device Sync Link (#sync=...)
+    if (hash.startsWith('#sync=')) {
       try {
         const raw = hash.replace('#sync=', '');
         const decodedStr = atob(decodeURIComponent(raw));
@@ -842,8 +997,7 @@
               await saveState();
               showToast(`Imported ${imported.length} period records from link!`);
             }
-            // Clear hash
-            history.replaceState(null, '', window.location.pathname + window.location.search);
+            updateLiveUrlHash();
           }, 300);
         }
       } catch (e) {

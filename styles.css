@@ -143,9 +143,123 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 30px 0 60px 0;
-  gap: 32px;
+  justify-content: flex-start;
+  padding: 20px 0 100px 0;
+  gap: 24px;
+  width: 100%;
+}
+
+/* Recent Cycles List (Last 10 Periods) */
+.recent-cycles-section {
+  width: 100%;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.recent-cycles-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+
+.recent-cycles-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+
+.recent-cycles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.cycle-row-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: transform var(--transition-fast);
+}
+
+.cycle-row-card:hover {
+  transform: translateY(-1px);
+}
+
+.cycle-row-dates {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.cycle-date-start {
+  color: var(--text-primary);
+}
+
+.cycle-date-end {
+  color: var(--text-secondary);
+}
+
+.cycle-date-end.is-current {
+  color: var(--accent-primary);
+  font-weight: 700;
+}
+
+.cycle-row-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cycle-bar-track {
+  flex: 1;
+  height: 8px;
+  background-color: var(--bg-subtle);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  position: relative;
+}
+
+.cycle-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, #FCA5A5 0%, #FF5A79 100%);
+  transition: width 0.4s ease;
+}
+
+.cycle-bar-fill.is-ongoing {
+  background: linear-gradient(90deg, #FECDD3 0%, #FDA4AF 100%);
+}
+
+.cycle-days-count {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  min-width: 60px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.recent-cycles-empty {
+  text-align: center;
+  padding: 18px 12px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  border: 1px dashed var(--border-medium);
+  border-radius: var(--radius-md);
 }
 
 /* Flo-style Large Cycle Orb */
