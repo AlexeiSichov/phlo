@@ -24,8 +24,9 @@
   const cycleSubtextEl = document.getElementById('cycle-subtext');
   const statusPillTextEl = document.getElementById('status-pill-text');
   const fabAddPeriodBtn = document.getElementById('fab-add-period');
+  const fabHistoryCalendarBtn = document.getElementById('fab-history-calendar');
 
-  // Calendar Elements
+  // Calendar Elements (Month Sheet)
   const calendarModal = document.getElementById('calendar-modal');
   const calMonthYearEl = document.getElementById('cal-month-year');
   const daysGridEl = document.getElementById('days-grid');
@@ -33,6 +34,12 @@
   const calNextBtn = document.getElementById('cal-next');
   const calTodayBtn = document.getElementById('cal-today-btn');
   const calCloseBtn = document.getElementById('cal-close-btn');
+
+  // History Calendar Modal
+  const historyModal = document.getElementById('history-modal');
+  const historyCalendarScroll = document.getElementById('history-calendar-scroll');
+  const historyCloseBtn = document.getElementById('history-close-btn');
+  const historyDoneBtn = document.getElementById('history-done-btn');
 
   // Confirm Modal Elements
   const confirmModal = document.getElementById('confirm-modal');
@@ -54,7 +61,6 @@
   const showQrBtn = document.getElementById('show-qr-btn');
   const copySyncLinkBtn = document.getElementById('copy-sync-link-btn');
   const exportIcsBtn = document.getElementById('export-ics-btn');
-  const periodsHistoryList = document.getElementById('periods-history-list');
   const clearAllDataBtn = document.getElementById('clear-all-data-btn');
 
   // QR Modal
@@ -104,6 +110,23 @@
 
   function getTodayISO() {
     return formatDateISO(new Date());
+  }
+
+  function getOrdinalSuffix(day) {
+    if (day >= 11 && day <= 13) return 'th';
+    switch (day % 10) {
+      case 1: return 'st';
+      case 2: return 'nd';
+      case 3: return 'rd';
+      default: return 'th';
+    }
+  }
+
+  function formatMonthDayOrdinal(isoStr) {
+    const d = parseDateISO(isoStr);
+    const monthName = d.toLocaleDateString('en-US', { month: 'long' });
+    const day = d.getDate();
+    return `${monthName} ${day}${getOrdinalSuffix(day)}`;
   }
 
   function daysDifference(dateStr1, dateStr2) {
@@ -185,7 +208,7 @@
     // Refresh UI
     updateCycleDisplay();
     renderCalendar();
-    renderHistoryList();
+    renderHistoryCalendar();
   }
 
   async function loadState() {
@@ -225,7 +248,7 @@
 
     updateCycleDisplay();
     renderCalendar();
-    renderHistoryList();
+    renderHistoryCalendar();
   }
 
   // --- Cycle Day Calculation & Flo-style UI Update ---
@@ -271,7 +294,53 @@
     }
   }
 
-  // --- Calendar Logic with 5-Day Soft Pastel Red Highlighting ---
+  // --- Shared Day Cell Generator ---
+  function createDayCell(cellDate, onCellClick) {
+    const dayISO = formatDateISO(cellDate);
+    const day = cellDate.getDate();
+    const todayStr = getTodayISO();
+
+    const cell = document.createElement('div');
+    cell.className = 'cal-day-cell';
+    cell.dataset.date = dayISO;
+
+    if (dayISO === todayStr) {
+      cell.classList.add('is-today');
+    }
+
+    // Check 5-day period highlight
+    let isPeriodDay = false;
+    let isStartDay = false;
+    let isEndDay = false;
+
+    for (const p of periods) {
+      const diff = daysDifference(dayISO, p);
+      if (diff >= 0 && diff < PERIOD_DURATION_DAYS) {
+        isPeriodDay = true;
+        if (diff === 0) isStartDay = true;
+        if (diff === PERIOD_DURATION_DAYS - 1) isEndDay = true;
+      }
+    }
+
+    if (isPeriodDay) {
+      cell.classList.add('period-highlight');
+      if (isStartDay) cell.classList.add('period-start', 'is-start-day');
+      if (isEndDay) cell.classList.add('period-end');
+    }
+
+    const inner = document.createElement('div');
+    inner.className = 'cal-day-inner';
+    inner.textContent = day;
+    cell.appendChild(inner);
+
+    if (onCellClick) {
+      cell.addEventListener('click', () => onCellClick(dayISO));
+    }
+
+    return cell;
+  }
+
+  // --- Calendar Logic with Fixed 6-Row Height ---
   function renderCalendar() {
     if (!daysGridEl) return;
     daysGridEl.innerHTML = '';
@@ -279,14 +348,12 @@
     const year = currentCalDate.getFullYear();
     const month = currentCalDate.getMonth();
 
-    // Set month-year title
     const monthNames = [
       'January', 'February', 'March', 'April', 'May', 'June',
       'July', 'August', 'September', 'October', 'November', 'December'
     ];
     calMonthYearEl.textContent = `${monthNames[month]} ${year}`;
 
-    // Compute first day of the month & total days
     const firstDayDate = new Date(year, month, 1);
     const lastDayDate = new Date(year, month + 1, 0);
     const totalDays = lastDayDate.getDate();
@@ -302,68 +369,130 @@
       daysGridEl.appendChild(emptyCell);
     }
 
-    const todayStr = getTodayISO();
-
     // Map each day
     for (let day = 1; day <= totalDays; day++) {
       const cellDate = new Date(year, month, day);
-      const dayISO = formatDateISO(cellDate);
-
-      const cell = document.createElement('div');
-      cell.className = 'cal-day-cell';
-      cell.dataset.date = dayISO;
-
-      if (dayISO === todayStr) {
-        cell.classList.add('is-today');
-      }
-
-      // Check 5-day period highlight
-      // 5 days including the start: diff in [0, 1, 2, 3, 4]
-      let isPeriodDay = false;
-      let isStartDay = false;
-      let isEndDay = false;
-
-      for (const p of periods) {
-        const diff = daysDifference(dayISO, p);
-        if (diff >= 0 && diff < PERIOD_DURATION_DAYS) {
-          isPeriodDay = true;
-          if (diff === 0) isStartDay = true;
-          if (diff === PERIOD_DURATION_DAYS - 1) isEndDay = true;
-        }
-      }
-
-      if (isPeriodDay) {
-        cell.classList.add('period-highlight');
-        if (isStartDay) cell.classList.add('period-start', 'is-start-day');
-        if (isEndDay) cell.classList.add('period-end');
-      }
-
-      const inner = document.createElement('div');
-      inner.className = 'cal-day-inner';
-      inner.textContent = day;
-      cell.appendChild(inner);
-
-      // Click handler to confirm period start
-      cell.addEventListener('click', () => onDayClick(dayISO));
-
+      const cell = createDayCell(cellDate, (dayISO) => onDayClick(dayISO));
       daysGridEl.appendChild(cell);
     }
+
+    // Pad trailing empty cells up to exactly 42 cells (6 full rows) to eliminate height jiggle
+    const filledCells = startDayIndex + totalDays;
+    const totalFixedCells = 42;
+    for (let i = filledCells; i < totalFixedCells; i++) {
+      const emptyCell = document.createElement('div');
+      emptyCell.className = 'cal-day-cell empty';
+      daysGridEl.appendChild(emptyCell);
+    }
+  }
+
+  // --- Scrollable History Calendar Rendering ---
+  function renderHistoryCalendar() {
+    if (!historyCalendarScroll) return;
+    historyCalendarScroll.innerHTML = '';
+
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth();
+
+    // Determine range of months
+    let startYear = currentYear;
+    let startMonth = currentMonth;
+
+    if (periods.length > 0) {
+      const earliestPeriodStr = periods[periods.length - 1]; // sorted descending
+      const earliest = parseDateISO(earliestPeriodStr);
+      startYear = earliest.getFullYear();
+      startMonth = earliest.getMonth();
+    } else {
+      const past = new Date(currentYear, currentMonth - 2, 1);
+      startYear = past.getFullYear();
+      startMonth = past.getMonth();
+
+      const notice = document.createElement('div');
+      notice.className = 'history-empty-notice';
+      notice.innerHTML = '<strong>No periods logged yet.</strong><br>Tap the + button to log your first period.';
+      historyCalendarScroll.appendChild(notice);
+    }
+
+    const monthsToRender = [];
+    let curY = currentYear;
+    let curM = currentMonth;
+    let count = 0;
+
+    while (count < 24) {
+      monthsToRender.push({ year: curY, month: curM });
+      if (curY < startYear || (curY === startYear && curM <= startMonth)) {
+        if (monthsToRender.length >= 3) break;
+      }
+      curM--;
+      if (curM < 0) {
+        curM = 11;
+        curY--;
+      }
+      count++;
+    }
+
+    const monthNames = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+
+    monthsToRender.forEach(({ year, month }) => {
+      const block = document.createElement('div');
+      block.className = 'history-month-block';
+
+      const title = document.createElement('div');
+      title.className = 'history-month-title';
+      title.textContent = `${monthNames[month]} ${year}`;
+      block.appendChild(title);
+
+      const weekdays = document.createElement('div');
+      weekdays.className = 'weekdays-grid';
+      weekdays.innerHTML = '<span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span>';
+      block.appendChild(weekdays);
+
+      const grid = document.createElement('div');
+      grid.className = 'days-grid-history';
+
+      const firstDay = new Date(year, month, 1);
+      const lastDay = new Date(year, month + 1, 0);
+      const totalDays = lastDay.getDate();
+
+      let startDayIndex = firstDay.getDay() - 1;
+      if (startDayIndex === -1) startDayIndex = 6;
+
+      for (let i = 0; i < startDayIndex; i++) {
+        const empty = document.createElement('div');
+        empty.className = 'cal-day-cell empty';
+        grid.appendChild(empty);
+      }
+
+      for (let day = 1; day <= totalDays; day++) {
+        const cellDate = new Date(year, month, day);
+        const cell = createDayCell(cellDate, (dayISO) => onDayClick(dayISO));
+        grid.appendChild(cell);
+      }
+
+      block.appendChild(grid);
+      historyCalendarScroll.appendChild(block);
+    });
   }
 
   // --- Day Click & Confirmation Dialog ---
   function onDayClick(dayISO) {
     pendingSelectedDate = dayISO;
-    const formatted = formatDisplayDate(dayISO);
+    const formatted = formatMonthDayOrdinal(dayISO);
     const isAlreadyStart = periods.includes(dayISO);
 
     if (isAlreadyStart) {
-      confirmTitleEl.textContent = 'Remove Period Start';
+      confirmTitleEl.textContent = 'Remove period';
       confirmMsgEl.textContent = `Remove period starting on ${formatted}?`;
       confirmOkBtn.textContent = 'Remove';
       confirmOkBtn.className = 'btn btn-danger';
     } else {
-      confirmTitleEl.textContent = 'Log Period Start';
-      confirmMsgEl.textContent = `Set ${formatted} as the first day of your period? (5 days will be highlighted)`;
+      confirmTitleEl.textContent = 'Log period';
+      confirmMsgEl.textContent = `Mark ${formatted} as the first day of your period?`;
       confirmOkBtn.textContent = 'Confirm';
       confirmOkBtn.className = 'btn btn-primary';
     }
@@ -378,11 +507,11 @@
 
     if (periods.includes(dateToToggle)) {
       periods = periods.filter((p) => p !== dateToToggle);
-      showToast(`Removed period for ${formatDisplayDate(dateToToggle)}`);
+      showToast(`Removed period for ${formatMonthDayOrdinal(dateToToggle)}`);
     } else {
       periods.push(dateToToggle);
       periods = sortPeriods(periods);
-      showToast(`Period logged for ${formatDisplayDate(dateToToggle)}!`);
+      showToast(`Period logged for ${formatMonthDayOrdinal(dateToToggle)}!`);
     }
 
     await saveState();
@@ -420,10 +549,35 @@
     renderCalendar();
   });
 
+  // --- History Calendar Navigation ---
+  if (fabHistoryCalendarBtn) {
+    fabHistoryCalendarBtn.addEventListener('click', () => {
+      renderHistoryCalendar();
+      historyModal.classList.add('active');
+    });
+  }
+
+  if (historyCloseBtn) {
+    historyCloseBtn.addEventListener('click', () => {
+      historyModal.classList.remove('active');
+    });
+  }
+
+  if (historyDoneBtn) {
+    historyDoneBtn.addEventListener('click', () => {
+      historyModal.classList.remove('active');
+    });
+  }
+
   // Close modals on clicking outside content
   calendarModal.addEventListener('click', (e) => {
     if (e.target === calendarModal) calendarModal.classList.remove('active');
   });
+  if (historyModal) {
+    historyModal.addEventListener('click', (e) => {
+      if (e.target === historyModal) historyModal.classList.remove('active');
+    });
+  }
   confirmModal.addEventListener('click', (e) => {
     if (e.target === confirmModal) confirmModal.classList.remove('active');
   });
@@ -437,54 +591,11 @@
   // --- Drawer / Menu Navigation ---
   menuBtn.addEventListener('click', () => {
     drawerBackdrop.classList.add('active');
-    renderHistoryList();
   });
 
   drawerCloseBtn.addEventListener('click', () => {
     drawerBackdrop.classList.remove('active');
   });
-
-  // --- History List Rendering ---
-  function renderHistoryList() {
-    if (!periodsHistoryList) return;
-    periodsHistoryList.innerHTML = '';
-
-    if (periods.length === 0) {
-      periodsHistoryList.innerHTML = '<div class="empty-state">No period start dates recorded yet.</div>';
-      return;
-    }
-
-    periods.forEach((p) => {
-      const item = document.createElement('div');
-      item.className = 'history-item';
-
-      const dateSpan = document.createElement('span');
-      dateSpan.className = 'history-date';
-      dateSpan.textContent = formatDisplayDate(p);
-
-      const delBtn = document.createElement('button');
-      delBtn.className = 'history-del-btn';
-      delBtn.setAttribute('aria-label', `Delete period on ${p}`);
-      delBtn.innerHTML = `
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="3 6 5 6 21 6"></polyline>
-          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-        </svg>
-      `;
-
-      delBtn.addEventListener('click', async () => {
-        if (confirm(`Remove period starting on ${formatDisplayDate(p)}?`)) {
-          periods = periods.filter((itemDate) => itemDate !== p);
-          await saveState();
-          showToast(`Deleted ${formatDisplayDate(p)}`);
-        }
-      });
-
-      item.appendChild(dateSpan);
-      item.appendChild(delBtn);
-      periodsHistoryList.appendChild(item);
-    });
-  }
 
   // --- File System Access API (Direct Save File on Device) ---
   const hasFSA = 'showSaveFilePicker' in window;
@@ -495,7 +606,7 @@
       fsStatusBadge.className = 'badge';
     }
     if (fsBtnText) {
-      fsBtnText.textContent = 'Use Backup & Restore Below';
+      fsBtnText.textContent = 'Link Save File (Chrome/Edge)';
     }
     if (fsLinkBtn) {
       fsLinkBtn.disabled = true;
@@ -508,13 +619,11 @@
     try {
       const handle = await idbGet('file_handle');
       if (handle) {
-        // Check if permission already granted
         const permission = await handle.queryPermission({ mode: 'readwrite' });
         if (permission === 'granted') {
           activeFileHandle = handle;
           updateFsBadge(handle.name);
         } else {
-          // Keep handle in standby, can re-request on click
           updateFsBadge(handle.name + ' (tap to link)');
         }
       }
@@ -528,8 +637,8 @@
       fsStatusBadge.textContent = filename ? `Linked: ${filename}` : 'Not Linked';
       fsStatusBadge.className = filename ? 'badge badge-success' : 'badge badge-accent';
     }
-    if (fsBtnText && filename) {
-      fsBtnText.textContent = `Update Linked File (${filename})`;
+    if (fsBtnText) {
+      fsBtnText.textContent = filename ? `Update Save File (${filename})` : 'Link Save File';
     }
   }
 
