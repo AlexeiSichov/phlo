@@ -706,18 +706,40 @@
   }
 
   // --- Manual Backup & Restore (JSON File) ---
-  exportJsonBtn.addEventListener('click', () => {
+  exportJsonBtn.addEventListener('click', async () => {
     const backupData = {
       app: 'phlo',
       version: 1,
       exportedAt: new Date().toISOString(),
       periods: periods
     };
-    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    const jsonStr = JSON.stringify(backupData, null, 2);
+    const fileName = `phlo-backup-${getTodayISO()}.json`;
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+
+    // On iOS / mobile with Web Share file support, trigger native iOS Share Sheet ("Save to Files")
+    if (navigator.canShare) {
+      try {
+        const file = new File([blob], fileName, { type: 'application/json' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: 'Phlo Backup',
+            text: 'Phlo cycle tracker backup file'
+          });
+          showToast('Backup shared / saved!');
+          return;
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') return; // User cancelled share sheet
+      }
+    }
+
+    // Standard download fallback
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `phlo-backup-${getTodayISO()}.json`;
+    a.download = fileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'phlo-cache-v2';
+const CACHE_NAME = 'phlo-cache-v3';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -6,12 +6,7 @@ const ASSETS_TO_CACHE = [
   './app.js',
   './qrcode.js',
   './manifest.json',
-  './icons/icon.svg',
-  './icons/apple-touch-icon.png',
-  './apple-touch-icon.png',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/favicon-32x32.png'
+  './icons/icon.svg'
 ];
 
 self.addEventListener('install', (event) => {
