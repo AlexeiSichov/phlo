@@ -1,4 +1,5 @@
-const CACHE_NAME = 'phlo-cache-v3';
+const CACHE_NAME = 'phlo-cache-v6';
+const DATA_CACHE_NAME = 'phlo-user-data-v1';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -6,7 +7,14 @@ const ASSETS_TO_CACHE = [
   './app.js',
   './qrcode.js',
   './manifest.json',
-  './icons/icon.svg'
+  './icons/icon.svg',
+  './icons/icon-32.png',
+  './icons/icon-120.png',
+  './icons/icon-152.png',
+  './icons/icon-167.png',
+  './icons/icon-180.png',
+  './icons/icon-192.png',
+  './icons/icon-512.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -22,7 +30,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((keys) => {
       return Promise.all(
         keys.map((key) => {
-          if (key !== CACHE_NAME) {
+          if (key !== CACHE_NAME && key !== DATA_CACHE_NAME) {
             return caches.delete(key);
           }
         })
@@ -35,28 +43,28 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        fetch(event.request).then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse));
-          }
-        }).catch(() => {});
-        return cachedResponse;
-      }
-
-      return fetch(event.request).then((networkResponse) => {
-        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
-          return networkResponse;
+    caches.open(CACHE_NAME).then((cache) => {
+      return cache.match(event.request).then((cachedResponse) => {
+        if (cachedResponse) {
+          fetch(event.request).then((networkResponse) => {
+            if (networkResponse && networkResponse.status === 200) {
+              cache.put(event.request, networkResponse);
+            }
+          }).catch(() => {});
+          return cachedResponse;
         }
-        const responseToCache = networkResponse.clone();
-        caches.open(CACHE_NAME).then((cache) => {
+
+        return fetch(event.request).then((networkResponse) => {
+          if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
+            return networkResponse;
+          }
+          const responseToCache = networkResponse.clone();
           cache.put(event.request, responseToCache);
+          return networkResponse;
         });
-        return networkResponse;
       });
     }).catch(() => {
-      return caches.match('./index.html');
+      return caches.open(CACHE_NAME).then((cache) => cache.match('./index.html'));
     })
   );
 });

@@ -8,15 +8,33 @@
 
   // --- Constants & Config ---
   const STORAGE_KEY = 'phlo_periods';
+  const WALKTHROUGH_KEY = 'phlo_walkthrough_done';
   const DB_NAME = 'phlo_db';
   const DB_STORE = 'keyval';
+  const DATA_CACHE_NAME = 'phlo-user-data-v1';
+  const DATA_CACHE_KEY = './phlo-data-store.json';
+  const BACKUP_FILENAME = 'phlo-data.json';
   const PERIOD_DURATION_DAYS = 5;
+
+  // --- Platform & Capability Detection ---
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const hasFSA = !isIOS && ('showSaveFilePicker' in window);
+  const hasOpenFSA = !isIOS && ('showOpenFilePicker' in window);
+  const isStandalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+    window.navigator.standalone === true;
+  const isChromiumLike = !isIOS && (/Chrome|Chromium|Edg|OPR|SamsungBrowser/.test(navigator.userAgent) || !!window.chrome);
 
   // --- State ---
   let periods = []; // Array of 'YYYY-MM-DD' start dates, sorted descending
-  let activeFileHandle = null;
+  let activeFileHandle = null; // Linked file handle with 'granted' readwrite permission
+  let pendingFileHandle = null; // Stored file handle needing permission re-prompt ('prompt')
+  let deferredInstallPrompt = null; // Captured beforeinstallprompt event
+  let isAppInstalled = isStandalone;
   let currentCalDate = new Date(); // Month currently displayed
   let pendingSelectedDate = null; // Date clicked for confirmation
+  let walkthroughSteps = [];
+  let walkthroughIndex = 0;
 
   // --- DOM Elements ---
   const cycleNumberEl = document.getElementById('cycle-number');
@@ -54,15 +72,35 @@
   const drawerBackdrop = document.getElementById('drawer-backdrop');
   const drawerCloseBtn = document.getElementById('drawer-close-btn');
   const storageStatusBadge = document.getElementById('storage-status-badge');
+  const fsCardTitle = document.getElementById('fs-card-title');
+  const fsCardDesc = document.getElementById('fs-card-desc');
   const fsStatusBadge = document.getElementById('fs-status-badge');
   const fsLinkBtn = document.getElementById('fs-link-btn');
   const fsBtnText = document.getElementById('fs-btn-text');
+  const fsUnlinkBtn = document.getElementById('fs-unlink-btn');
   const exportJsonBtn = document.getElementById('export-json-btn');
   const importFileInput = document.getElementById('import-file-input');
   const showQrBtn = document.getElementById('show-qr-btn');
   const copySyncLinkBtn = document.getElementById('copy-sync-link-btn');
   const exportIcsBtn = document.getElementById('export-ics-btn');
+  const openWalkthroughBtn = document.getElementById('open-walkthrough-btn');
   const clearAllDataBtn = document.getElementById('clear-all-data-btn');
+
+  // File Link / Backup Prompt Modal
+  const filePromptModal = document.getElementById('file-prompt-modal');
+  const filePromptTitleEl = document.getElementById('file-prompt-title');
+  const filePromptMsgEl = document.getElementById('file-prompt-message');
+  const filePromptPrimaryBtn = document.getElementById('file-prompt-primary-btn');
+  const filePromptSecondaryBtn = document.getElementById('file-prompt-secondary-btn');
+  const filePromptDismissBtn = document.getElementById('file-prompt-dismiss-btn');
+
+  // Walkthrough Modal
+  const walkthroughModal = document.getElementById('walkthrough-modal');
+  const wtStepBadge = document.getElementById('wt-step-badge');
+  const wtSkipBtn = document.getElementById('wt-skip-btn');
+  const wtDots = document.getElementById('wt-dots');
+  const wtBody = document.getElementById('wt-body');
+  const wtFooter = document.getElementById('wt-footer');
 
   // QR Modal
   const qrModal = document.getElementById('qr-modal');
@@ -71,6 +109,29 @@
 
   // Toast
   const toastEl = document.getElementById('toast');
+
+  // --- PWA Install Events ---
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    if (walkthroughModal && walkthroughModal.classList.contains('active')) {
+      renderWalkthroughStep();
+    }
+  });
+
+  window.addEventListener('appinstalled', () => {
+    deferredInstallPrompt = null;
+    isAppInstalled = true;
+    showToast('Phlo installed on your device!');
+    if (walkthroughModal && walkthroughModal.classList.contains('active')) {
+      const step = walkthroughSteps[walkthroughIndex];
+      if (step && step.id === 'install') {
+        advanceWalkthrough();
+      } else {
+        renderWalkthroughStep();
+      }
+    }
+  });
 
   // --- Utility Functions ---
   function showToast(message, duration = 3000) {
@@ -191,12 +252,80 @@
     });
   }
 
-  // --- Data Persistence ---
-  function sortPeriods(arr) {
-    return Array.from(new Set(arr)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  // --- Cache API Data Store ---
+  async function cacheGetPeriods() {
+    if (!('caches' in window)) return null;
+    try {
+      const cache = await caches.open(DATA_CACHE_NAME);
+      const resp = await cache.match(DATA_CACHE_KEY);
+      if (!resp) return null;
+      const parsed = await resp.json();
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && Array.isArray(parsed.periods)) return parsed.periods;
+      return null;
+    } catch (e) {
+      console.warn('Cache API load failed', e);
+      return null;
+    }
   }
 
-  async function saveState() {
+  async function cacheSetPeriods(arr) {
+    if (!('caches' in window)) return false;
+    try {
+      const cache = await caches.open(DATA_CACHE_NAME);
+      const payload = JSON.stringify({
+        version: 1,
+        app: 'phlo',
+        updatedAt: new Date().toISOString(),
+        periods: arr
+      });
+      await cache.put(DATA_CACHE_KEY, new Response(payload, {
+        headers: { 'Content-Type': 'application/json' }
+      }));
+      return true;
+    } catch (e) {
+      console.warn('Cache API save failed', e);
+      return false;
+    }
+  }
+
+  async function requestPersistentStorage() {
+    if (!(navigator.storage && navigator.storage.persist)) return false;
+    try {
+      let isPersisted = false;
+      if (navigator.storage.persisted) {
+        isPersisted = await navigator.storage.persisted();
+      }
+      if (!isPersisted) {
+        isPersisted = await navigator.storage.persist();
+      }
+      if (storageStatusBadge) {
+        storageStatusBadge.textContent = isPersisted ? 'Persistent' : 'Standard';
+        storageStatusBadge.className = isPersisted ? 'badge badge-success' : 'badge';
+      }
+      return isPersisted;
+    } catch (e) {
+      console.warn('Persistent storage request failed', e);
+      return false;
+    }
+  }
+
+  // --- Data Persistence ---
+  function sortPeriods(arr) {
+    const valid = arr.filter((item) => typeof item === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item));
+    return Array.from(new Set(valid)).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  }
+
+  function buildBackupPayload(data) {
+    return {
+      app: 'phlo',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      periods: data
+    };
+  }
+
+  function saveBrowserStorageSync() {
     // 1. LocalStorage
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(periods));
@@ -204,63 +333,100 @@
       console.warn('LocalStorage save failed', e);
     }
 
-    // 2. IndexedDB
-    await idbSet('periods', periods);
-
-    // 3. File System Access API (if linked)
-    if (activeFileHandle) {
-      await writeToFileHandle(activeFileHandle, periods);
-    }
-
-    // 4. Update Live URL Hash for automatic bookmark sync
+    // 2. Update Live URL Hash for automatic bookmark sync
     updateLiveUrlHash();
 
-    // Refresh UI
+    // 3. Refresh UI
     updateCycleDisplay();
     renderRecentCycles();
     renderCalendar();
     renderHistoryCalendar();
   }
 
-  async function loadState() {
-    let loaded = null;
+  async function saveBrowserStorageAsync() {
+    // IndexedDB + Cache API + request persistence
+    await Promise.all([
+      idbSet('periods', periods),
+      cacheSetPeriods(periods),
+      requestPersistentStorage()
+    ]);
+  }
 
-    // Try LocalStorage first
+  async function saveState(options = {}) {
+    saveBrowserStorageSync();
+    await saveBrowserStorageAsync();
+
+    // File System Access API (if linked & granted)
+    if (!options.skipFileWrite && hasFSA && activeFileHandle) {
+      const res = await writeToFileHandle(activeFileHandle, periods);
+      if (!res.ok) {
+        updateFsBadge(activeFileHandle.name, 'needs-permission');
+      }
+    }
+  }
+
+  async function loadState() {
+    let lsPeriods = null;
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) loaded = JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) lsPeriods = sortPeriods(parsed);
+      }
     } catch (e) {
       console.warn('LocalStorage load failed', e);
     }
 
-    // If empty, try IndexedDB
-    if (!loaded || !Array.isArray(loaded)) {
-      const fromIdb = await idbGet('periods');
-      if (fromIdb && Array.isArray(fromIdb)) loaded = fromIdb;
+    const [idbRaw, cacheRaw] = await Promise.all([
+      idbGet('periods'),
+      cacheGetPeriods()
+    ]);
+    const idbPeriods = Array.isArray(idbRaw) ? sortPeriods(idbRaw) : null;
+    const cachePeriods = Array.isArray(cacheRaw) ? sortPeriods(cacheRaw) : null;
+
+    // Pick first non-empty store, or fall back to empty array
+    let loaded = [];
+    let needsBackfill = false;
+
+    if (lsPeriods && lsPeriods.length > 0) {
+      loaded = lsPeriods;
+      if (!idbPeriods || idbPeriods.length === 0 || !cachePeriods || cachePeriods.length === 0) {
+        needsBackfill = true;
+      }
+    } else if (idbPeriods && idbPeriods.length > 0) {
+      loaded = idbPeriods;
+      needsBackfill = true;
+    } else if (cachePeriods && cachePeriods.length > 0) {
+      loaded = cachePeriods;
+      needsBackfill = true;
     }
 
-    periods = sortPeriods(Array.isArray(loaded) ? loaded : []);
+    periods = loaded;
 
     // Check for linked file handle
     await restoreFileHandle();
 
     // Check URL Hash for Cross-device sync or bookmark data
-    checkUrlSync();
+    const hadUrlSync = checkUrlSync();
 
-    // Request persistent storage
-    if (navigator.storage && navigator.storage.persist) {
-      navigator.storage.persist().then((isPersisted) => {
-        if (storageStatusBadge) {
-          storageStatusBadge.textContent = isPersisted ? 'Persistent' : 'Standard';
-          storageStatusBadge.className = isPersisted ? 'badge badge-success' : 'badge';
-        }
-      });
+    // Backfill all browser storage layers if one was recovered
+    if (needsBackfill && periods.length > 0) {
+      saveBrowserStorageSync();
+      await saveBrowserStorageAsync();
+    } else {
+      await requestPersistentStorage();
     }
 
     updateCycleDisplay();
     renderRecentCycles();
     renderCalendar();
     renderHistoryCalendar();
+
+    // Show first-time walkthrough if no data is stored yet and user hasn't finished/skipped it
+    const wtDone = await isWalkthroughDone();
+    if (periods.length === 0 && !hadUrlSync && !wtDone) {
+      openWalkthrough();
+    }
   }
 
   // --- Live URL Bookmark Hash Updating ---
@@ -618,9 +784,11 @@
   confirmOkBtn.addEventListener('click', async () => {
     if (!pendingSelectedDate) return;
     const dateToToggle = pendingSelectedDate;
+    const wasAlreadyStart = periods.includes(dateToToggle);
     confirmModal.classList.remove('active');
+    pendingSelectedDate = null;
 
-    if (periods.includes(dateToToggle)) {
+    if (wasAlreadyStart) {
       periods = periods.filter((p) => p !== dateToToggle);
       showToast(`Removed period for ${formatMonthDayOrdinal(dateToToggle)}`);
     } else {
@@ -629,8 +797,20 @@
       showToast(`Period logged for ${formatMonthDayOrdinal(dateToToggle)}!`);
     }
 
-    await saveState();
-    pendingSelectedDate = null;
+    // Save synchronously to LocalStorage and update UI immediately
+    saveBrowserStorageSync();
+
+    // Start IndexedDB + Cache API saves in parallel (do not await before gesture-sensitive APIs)
+    const asyncSavePromise = saveBrowserStorageAsync();
+
+    // Platform backup guarantee while user activation from Confirm tap is active
+    if (isIOS) {
+      await triggerIOSFileBackup(periods);
+    } else if (hasFSA) {
+      await ensureFileBackupOnLog(periods);
+    }
+
+    await asyncSavePromise;
   });
 
   confirmCancelBtn.addEventListener('click', () => {
@@ -708,6 +888,11 @@
   qrModal.addEventListener('click', (e) => {
     if (e.target === qrModal) qrModal.classList.remove('active');
   });
+  if (filePromptModal) {
+    filePromptModal.addEventListener('click', (e) => {
+      if (e.target === filePromptModal) filePromptModal.classList.remove('active');
+    });
+  }
 
   // --- Drawer / Menu Navigation ---
   menuBtn.addEventListener('click', () => {
@@ -718,26 +903,72 @@
     drawerBackdrop.classList.remove('active');
   });
 
-  // --- File System Access API (Direct Save File on Device) ---
-  const hasFSA = 'showSaveFilePicker' in window;
+  // --- File System Access API & Platform Backup Handling ---
+  function initPlatformFileUI() {
+    if (hasFSA) return;
 
-  if (!hasFSA) {
+    if (isIOS) {
+      if (fsCardTitle) fsCardTitle.textContent = 'iOS Files Backup';
+      if (fsStatusBadge) {
+        fsStatusBadge.textContent = 'Files Menu Active';
+        fsStatusBadge.className = 'badge badge-success';
+      }
+      if (fsCardDesc) {
+        fsCardDesc.innerHTML = 'Apple restricts background file writing on iOS, so Phlo opens the Files menu with <code>phlo-data.json</code> on every period log. Choose <strong>Save to Files → On My iPhone → phlo</strong>.';
+      }
+      if (fsLinkBtn) fsLinkBtn.style.display = 'none';
+      if (fsUnlinkBtn) fsUnlinkBtn.style.display = 'none';
+    } else {
+      if (fsStatusBadge) {
+        fsStatusBadge.textContent = 'Unavailable';
+        fsStatusBadge.className = 'badge';
+      }
+      if (fsBtnText) {
+        fsBtnText.textContent = 'File Linking Unavailable in Browser';
+      }
+      if (fsLinkBtn) {
+        fsLinkBtn.disabled = true;
+        fsLinkBtn.setAttribute('disabled', 'true');
+        fsLinkBtn.classList.add('btn-disabled');
+      }
+      if (fsCardDesc) {
+        fsCardDesc.innerHTML = "This browser does not support background file linking. Your logs are saved to your browser's storage. Use <strong>Save Backup</strong> below to export <code>phlo-data.json</code>.";
+      }
+    }
+  }
+
+  initPlatformFileUI();
+
+  function updateFsBadge(filename, state) {
+    if (!hasFSA) return;
     if (fsStatusBadge) {
-      fsStatusBadge.textContent = 'Not Supported';
-      fsStatusBadge.className = 'badge';
+      if (state === 'linked' && filename) {
+        fsStatusBadge.textContent = `Linked: ${filename}`;
+        fsStatusBadge.className = 'badge badge-success';
+      } else if (state === 'needs-permission' && filename) {
+        fsStatusBadge.textContent = `Needs Access: ${filename}`;
+        fsStatusBadge.className = 'badge badge-warning';
+      } else {
+        fsStatusBadge.textContent = 'Not Linked';
+        fsStatusBadge.className = 'badge badge-accent';
+      }
     }
-    if (fsBtnText) {
-      fsBtnText.textContent = 'Link Save File (Not Supported on iOS)';
+
+    if (fsBtnText && fsLinkBtn) {
+      if (state === 'linked' && filename) {
+        fsBtnText.textContent = `Change File (${filename})`;
+        fsLinkBtn.className = 'btn btn-outline btn-full';
+      } else if (state === 'needs-permission' && filename) {
+        fsBtnText.textContent = `Re-authorize ${filename}`;
+        fsLinkBtn.className = 'btn btn-primary btn-full';
+      } else {
+        fsBtnText.textContent = `Link ${BACKUP_FILENAME}`;
+        fsLinkBtn.className = 'btn btn-primary btn-full';
+      }
     }
-    if (fsLinkBtn) {
-      fsLinkBtn.disabled = true;
-      fsLinkBtn.setAttribute('disabled', 'true');
-      fsLinkBtn.classList.add('btn-disabled');
-      fsLinkBtn.title = 'Direct file access is restricted by Apple on iOS browsers. Use Save Backup or QR Code Sync below instead.';
-    }
-    const fsDesc = document.querySelector('#fs-card .section-desc');
-    if (fsDesc) {
-      fsDesc.textContent = 'Direct file writing is not supported by iOS browsers (Apple restricts background filesystem access). Use Save Backup or QR Code Sync below to keep your data safe and transfer between devices.';
+
+    if (fsUnlinkBtn) {
+      fsUnlinkBtn.style.display = filename ? 'inline-flex' : 'none';
     }
   }
 
@@ -745,33 +976,50 @@
     if (!hasFSA) return;
     try {
       const handle = await idbGet('file_handle');
-      if (handle) {
-        const permission = await handle.queryPermission({ mode: 'readwrite' });
-        if (permission === 'granted') {
-          activeFileHandle = handle;
-          updateFsBadge(handle.name);
-        } else {
-          updateFsBadge(handle.name + ' (tap to link)');
-        }
+      if (!handle) {
+        activeFileHandle = null;
+        pendingFileHandle = null;
+        updateFsBadge(null, 'unlinked');
+        return;
+      }
+
+      const permission = await handle.queryPermission({ mode: 'readwrite' });
+      if (permission === 'granted') {
+        activeFileHandle = handle;
+        pendingFileHandle = null;
+        updateFsBadge(handle.name, 'linked');
+      } else {
+        activeFileHandle = null;
+        pendingFileHandle = handle;
+        updateFsBadge(handle.name, 'needs-permission');
       }
     } catch (e) {
       console.warn('Could not restore file handle', e);
+      activeFileHandle = null;
+      pendingFileHandle = null;
+      updateFsBadge(null, 'unlinked');
     }
   }
 
-  function updateFsBadge(filename) {
-    if (fsStatusBadge) {
-      fsStatusBadge.textContent = filename ? `Linked: ${filename}` : 'Not Linked';
-      fsStatusBadge.className = filename ? 'badge badge-success' : 'badge badge-accent';
-    }
-    if (fsBtnText && fsLinkBtn) {
-      if (filename) {
-        fsBtnText.textContent = 'Unlink';
-        fsLinkBtn.className = 'btn btn-danger btn-full';
-      } else {
-        fsBtnText.textContent = 'Link Save File';
-        fsLinkBtn.className = 'btn btn-outline btn-full';
-      }
+  async function mergePeriodsFromFile(handle) {
+    try {
+      const file = await handle.getFile();
+      if (!file || file.size === 0) return 0;
+      const text = await file.text();
+      if (!text || !text.trim()) return 0;
+
+      const parsed = JSON.parse(text);
+      const rawPeriods = Array.isArray(parsed)
+        ? parsed
+        : (parsed && Array.isArray(parsed.periods) ? parsed.periods : []);
+      const valid = rawPeriods.filter((item) => typeof item === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item));
+      if (valid.length === 0) return 0;
+
+      const beforeCount = periods.length;
+      periods = sortPeriods([...periods, ...valid]);
+      return Math.max(0, periods.length - beforeCount);
+    } catch (e) {
+      return 0;
     }
   }
 
@@ -780,86 +1028,261 @@
       const permission = await handle.queryPermission({ mode: 'readwrite' });
       if (permission !== 'granted') {
         const requested = await handle.requestPermission({ mode: 'readwrite' });
-        if (requested !== 'granted') return;
+        if (requested !== 'granted') {
+          return { ok: false, reason: 'permission' };
+        }
       }
       const writable = await handle.createWritable();
-      const content = JSON.stringify({ version: 1, app: 'phlo', periods: data }, null, 2);
+      const content = JSON.stringify(buildBackupPayload(data), null, 2);
       await writable.write(content);
       await writable.close();
       showToast(`Auto-saved to ${handle.name}`);
+      return { ok: true };
     } catch (e) {
       console.warn('Failed to write to file handle', e);
+      return { ok: false, reason: 'write-error', error: e };
     }
+  }
+
+  async function linkSaveFile() {
+    if (!hasFSA) return false;
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: BACKUP_FILENAME,
+        types: [{
+          description: 'Phlo Save File',
+          accept: { 'application/json': ['.json'] }
+        }]
+      });
+
+      // Merge any existing records before writing so an existing backup is never wiped
+      const addedCount = await mergePeriodsFromFile(handle);
+      activeFileHandle = handle;
+      pendingFileHandle = null;
+      await idbSet('file_handle', handle);
+
+      const writeRes = await writeToFileHandle(handle, periods);
+      if (!writeRes.ok) {
+        showToast('Could not write to selected file.');
+        updateFsBadge(handle.name, 'needs-permission');
+        return false;
+      }
+
+      if (addedCount > 0) {
+        await saveState({ skipFileWrite: true });
+      }
+      updateFsBadge(handle.name, 'linked');
+      showToast(addedCount > 0
+        ? `Linked ${handle.name} and restored ${addedCount} record${addedCount === 1 ? '' : 's'}!`
+        : `Backup linked to ${handle.name}!`);
+      return true;
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error(err);
+        showToast('Failed to link save file.');
+      }
+      return false;
+    }
+  }
+
+  async function linkExistingFile() {
+    if (!hasOpenFSA) return false;
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        multiple: false,
+        types: [{
+          description: 'Phlo Backup JSON',
+          accept: { 'application/json': ['.json'] }
+        }]
+      });
+      if (!handle) return false;
+
+      const perm = await handle.requestPermission({ mode: 'readwrite' });
+      const addedCount = await mergePeriodsFromFile(handle);
+
+      if (perm === 'granted') {
+        activeFileHandle = handle;
+        pendingFileHandle = null;
+        await idbSet('file_handle', handle);
+        await writeToFileHandle(handle, periods);
+        updateFsBadge(handle.name, 'linked');
+      } else {
+        updateFsBadge(null, 'unlinked');
+      }
+
+      await saveState({ skipFileWrite: true });
+      showToast(addedCount > 0
+        ? `Restored ${addedCount} record${addedCount === 1 ? '' : 's'} and linked ${handle.name}!`
+        : `Linked existing ${handle.name}!`);
+      return perm === 'granted';
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error(err);
+        showToast('Could not open backup file.');
+      }
+      return false;
+    }
+  }
+
+  async function reauthorizePendingFile() {
+    if (!pendingFileHandle) return false;
+    try {
+      const perm = await pendingFileHandle.requestPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') return false;
+
+      activeFileHandle = pendingFileHandle;
+      pendingFileHandle = null;
+      const writeRes = await writeToFileHandle(activeFileHandle, periods);
+      if (!writeRes.ok) {
+        activeFileHandle = null;
+        updateFsBadge(null, 'unlinked');
+        return false;
+      }
+      updateFsBadge(activeFileHandle.name, 'linked');
+      return true;
+    } catch (e) {
+      console.warn('Re-authorization failed', e);
+      return false;
+    }
+  }
+
+  function openFileLinkPrompt(reason) {
+    if (!filePromptModal) return;
+
+    if (reason === 'ios-share-fallback') {
+      filePromptTitleEl.textContent = `Save ${BACKUP_FILENAME}`;
+      filePromptMsgEl.innerHTML = `Tap below to open the iOS Files menu and save <code>${BACKUP_FILENAME}</code> (recommended folder: <strong>On My iPhone → phlo</strong>).`;
+      filePromptPrimaryBtn.textContent = `Save ${BACKUP_FILENAME} to Files`;
+      filePromptSecondaryBtn.style.display = 'none';
+      filePromptPrimaryBtn.onclick = async () => {
+        filePromptModal.classList.remove('active');
+        await triggerIOSFileBackup(periods, true);
+      };
+      filePromptDismissBtn.onclick = () => {
+        filePromptModal.classList.remove('active');
+      };
+      filePromptModal.classList.add('active');
+      return;
+    }
+
+    if (reason === 'needs-permission' && pendingFileHandle) {
+      filePromptTitleEl.textContent = 'Re-authorize Backup File';
+      filePromptMsgEl.innerHTML = `Your browser paused write access to <code>${pendingFileHandle.name}</code> after closing. Re-authorize it so this log is saved to disk.`;
+      filePromptPrimaryBtn.textContent = `Allow Access to ${pendingFileHandle.name}`;
+      filePromptSecondaryBtn.style.display = 'inline-flex';
+      filePromptSecondaryBtn.textContent = `Pick a New ${BACKUP_FILENAME}`;
+      filePromptPrimaryBtn.onclick = async () => {
+        const ok = await reauthorizePendingFile();
+        if (ok) {
+          filePromptModal.classList.remove('active');
+        } else {
+          showToast('Permission not granted. Try picking a file instead.');
+        }
+      };
+      filePromptSecondaryBtn.onclick = async () => {
+        const ok = await linkSaveFile();
+        if (ok) filePromptModal.classList.remove('active');
+      };
+    } else if (reason === 'broken') {
+      filePromptTitleEl.textContent = 'Re-link Backup File';
+      filePromptMsgEl.innerHTML = `Phlo couldn't write to your previously linked file (it may have been moved or deleted). Link <code>${BACKUP_FILENAME}</code> again so no log goes missing.`;
+      filePromptPrimaryBtn.textContent = `Link ${BACKUP_FILENAME}`;
+      if (hasOpenFSA) {
+        filePromptSecondaryBtn.style.display = 'inline-flex';
+        filePromptSecondaryBtn.textContent = 'Load & Link Existing File';
+        filePromptSecondaryBtn.onclick = async () => {
+          const ok = await linkExistingFile();
+          if (ok) filePromptModal.classList.remove('active');
+        };
+      } else {
+        filePromptSecondaryBtn.style.display = 'none';
+      }
+      filePromptPrimaryBtn.onclick = async () => {
+        const ok = await linkSaveFile();
+        if (ok) filePromptModal.classList.remove('active');
+      };
+    } else {
+      filePromptTitleEl.textContent = `Link ${BACKUP_FILENAME}`;
+      filePromptMsgEl.innerHTML = `Your log is saved in the browser, but no backup file is linked yet. Link <code>${BACKUP_FILENAME}</code> so every log is auto-saved on your device.`;
+      filePromptPrimaryBtn.textContent = `Link ${BACKUP_FILENAME}`;
+      if (hasOpenFSA) {
+        filePromptSecondaryBtn.style.display = 'inline-flex';
+        filePromptSecondaryBtn.textContent = 'Load & Link Existing File';
+        filePromptSecondaryBtn.onclick = async () => {
+          const ok = await linkExistingFile();
+          if (ok) filePromptModal.classList.remove('active');
+        };
+      } else {
+        filePromptSecondaryBtn.style.display = 'none';
+      }
+      filePromptPrimaryBtn.onclick = async () => {
+        const ok = await linkSaveFile();
+        if (ok) filePromptModal.classList.remove('active');
+      };
+    }
+
+    filePromptDismissBtn.onclick = () => {
+      filePromptModal.classList.remove('active');
+    };
+    filePromptModal.classList.add('active');
+  }
+
+  async function ensureFileBackupOnLog(data) {
+    if (activeFileHandle) {
+      const res = await writeToFileHandle(activeFileHandle, data);
+      if (res.ok) return true;
+
+      if (res.reason === 'permission') {
+        pendingFileHandle = activeFileHandle;
+        activeFileHandle = null;
+        updateFsBadge(pendingFileHandle.name, 'needs-permission');
+        openFileLinkPrompt('needs-permission');
+      } else {
+        activeFileHandle = null;
+        pendingFileHandle = null;
+        await idbSet('file_handle', null);
+        updateFsBadge(null, 'unlinked');
+        openFileLinkPrompt('broken');
+      }
+      return false;
+    }
+
+    if (pendingFileHandle) {
+      const ok = await reauthorizePendingFile();
+      if (ok) return true;
+      openFileLinkPrompt('needs-permission');
+      return false;
+    }
+
+    openFileLinkPrompt('unlinked');
+    return false;
   }
 
   if (fsLinkBtn && hasFSA) {
     fsLinkBtn.addEventListener('click', async () => {
-      // If already linked, clicking this button unlinks it
-      if (activeFileHandle) {
-        if (confirm(`Unlink save file (${activeFileHandle.name})? Your cycle history will remain safely stored in browser memory, but future changes will no longer write to this file.`)) {
-          activeFileHandle = null;
-          await idbSet('file_handle', null);
-          updateFsBadge(null);
-          showToast('Save file unlinked.');
-        }
-        return;
+      if (pendingFileHandle && !activeFileHandle) {
+        const ok = await reauthorizePendingFile();
+        if (ok) return;
       }
+      await linkSaveFile();
+    });
+  }
 
-      // If not linked, pick and link a file
-      try {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: 'phlo-data.json',
-          types: [{
-            description: 'Phlo Save File',
-            accept: { 'application/json': ['.json'] }
-          }]
-        });
-
-        activeFileHandle = handle;
-        await idbSet('file_handle', handle);
-        await writeToFileHandle(handle, periods);
-        updateFsBadge(handle.name);
-        showToast(`Save file linked to ${handle.name}!`);
-      } catch (err) {
-        if (err.name !== 'AbortError') {
-          console.error(err);
-          showToast('Failed to link save file.');
-        }
+  if (fsUnlinkBtn && hasFSA) {
+    fsUnlinkBtn.addEventListener('click', async () => {
+      const name = (activeFileHandle && activeFileHandle.name) || (pendingFileHandle && pendingFileHandle.name) || BACKUP_FILENAME;
+      if (confirm(`Unlink save file (${name})? Your cycle history remains in browser storage, and Phlo will prompt you to re-link on your next period log.`)) {
+        activeFileHandle = null;
+        pendingFileHandle = null;
+        await idbSet('file_handle', null);
+        updateFsBadge(null, 'unlinked');
+        showToast('Save file unlinked.');
       }
     });
   }
 
-  // --- Manual Backup & Restore (JSON File) ---
-  exportJsonBtn.addEventListener('click', async () => {
-    const backupData = {
-      app: 'phlo',
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      periods: periods
-    };
-    const jsonStr = JSON.stringify(backupData, null, 2);
-    const fileName = `phlo-backup-${getTodayISO()}.json`;
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-
-    // On iOS / mobile with Web Share file support, trigger native iOS Share Sheet ("Save to Files")
-    if (navigator.canShare) {
-      try {
-        const file = new File([blob], fileName, { type: 'application/json' });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({
-            files: [file],
-            title: 'Phlo Backup',
-            text: 'Phlo cycle tracker backup file'
-          });
-          showToast('Backup shared / saved!');
-          return;
-        }
-      } catch (err) {
-        if (err.name === 'AbortError') return; // User cancelled share sheet
-      }
-    }
-
-    // Standard download fallback
+  // --- Shared Export / iOS Files Trigger ---
+  function triggerBlobDownload(blob, fileName) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -868,7 +1291,63 @@
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast('Backup file downloaded!');
+  }
+
+  async function triggerIOSFileBackup(data, fromFallbackModal = false) {
+    const jsonStr = JSON.stringify(buildBackupPayload(data), null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const file = new File([blob], BACKUP_FILENAME, { type: 'application/json' });
+
+    if (navigator.canShare) {
+      try {
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: BACKUP_FILENAME,
+            text: 'Save phlo-data.json to Files (On My iPhone → phlo)'
+          });
+          showToast(`Saved / shared ${BACKUP_FILENAME}!`);
+          return true;
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') return false;
+        if (err.name === 'NotAllowedError' && !fromFallbackModal) {
+          openFileLinkPrompt('ios-share-fallback');
+          return false;
+        }
+      }
+    }
+
+    // Download fallback if Web Share files isn't supported
+    triggerBlobDownload(blob, BACKUP_FILENAME);
+    showToast(`Downloaded ${BACKUP_FILENAME}!`);
+    return true;
+  }
+
+  // --- Manual Backup & Restore (JSON File) ---
+  exportJsonBtn.addEventListener('click', async () => {
+    const jsonStr = JSON.stringify(buildBackupPayload(periods), null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+
+    if (navigator.canShare) {
+      try {
+        const file = new File([blob], BACKUP_FILENAME, { type: 'application/json' });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: BACKUP_FILENAME,
+            text: 'Phlo cycle tracker backup file'
+          });
+          showToast(`Saved / shared ${BACKUP_FILENAME}!`);
+          return;
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+      }
+    }
+
+    triggerBlobDownload(blob, BACKUP_FILENAME);
+    showToast(`${BACKUP_FILENAME} downloaded!`);
   });
 
   importFileInput.addEventListener('change', (e) => {
@@ -887,15 +1366,13 @@
           importedPeriods = parsed.periods;
         }
 
-        // Validate YYYY-MM-DD
-        const validPeriods = importedPeriods.filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item));
+        const validPeriods = importedPeriods.filter((item) => typeof item === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(item));
 
         if (validPeriods.length === 0) {
           showToast('No valid period dates found in file.');
           return;
         }
 
-        // Merge with existing
         periods = sortPeriods([...periods, ...validPeriods]);
         await saveState();
         showToast(`Imported ${validPeriods.length} period records!`);
@@ -953,7 +1430,7 @@
 
   function checkUrlSync() {
     const hash = window.location.hash;
-    if (!hash) return;
+    if (!hash) return false;
 
     // 1. Live Bookmark Data (#data=...)
     if (hash.startsWith('#data=')) {
@@ -963,24 +1440,24 @@
         const imported = JSON.parse(decodedStr);
 
         if (Array.isArray(imported) && imported.length > 0) {
-          // If browser storage was cleared or empty, restore automatically from bookmark!
           if (periods.length === 0) {
             periods = sortPeriods(imported);
             saveState();
-            showToast(`Restored ${periods.length} cycles from bookmarked URL!`);
+            showToast(`Restored ${periods.length} cycles from the URL!`);
+            return true;
           } else {
-            // Merge with local storage
             const merged = sortPeriods([...periods, ...imported]);
             if (merged.length !== periods.length) {
               periods = merged;
               saveState();
             }
+            return true;
           }
         }
       } catch (e) {
         console.warn('Failed to parse #data hash', e);
       }
-      return;
+      return false;
     }
 
     // 2. Cross-Device Sync Link (#sync=...)
@@ -999,11 +1476,243 @@
             }
             updateLiveUrlHash();
           }, 300);
+          return true;
         }
       } catch (e) {
         console.warn('Failed to parse sync hash', e);
       }
     }
+    return false;
+  }
+
+  // --- First-Time Walkthrough ---
+  async function isWalkthroughDone() {
+    try {
+      if (localStorage.getItem(WALKTHROUGH_KEY) === '1') return true;
+    } catch (e) {}
+    const fromIdb = await idbGet(WALKTHROUGH_KEY);
+    return fromIdb === true;
+  }
+
+  async function markWalkthroughDone() {
+    try {
+      localStorage.setItem(WALKTHROUGH_KEY, '1');
+    } catch (e) {}
+    await idbSet(WALKTHROUGH_KEY, true);
+  }
+
+  function buildWalkthroughSteps() {
+    const steps = [];
+
+    // 1. Prompt to install PWA if on a supported platform and not already installed
+    const canOfferInstall = !isAppInstalled && (isIOS || !!deferredInstallPrompt || isChromiumLike);
+    if (canOfferInstall) {
+      steps.push({ id: 'install' });
+    }
+
+    // 2. Prompt to link backup file if supported
+    if (hasFSA) {
+      steps.push({ id: 'link-file' });
+    }
+
+    // 3. Quick usage, storage & cross-device tutorial
+    steps.push({ id: 'tutorial' });
+
+    return steps;
+  }
+
+  function openWalkthrough() {
+    if (!walkthroughModal) return;
+    walkthroughSteps = buildWalkthroughSteps();
+    walkthroughIndex = 0;
+    renderWalkthroughStep();
+    walkthroughModal.classList.add('active');
+  }
+
+  async function closeWalkthrough() {
+    await markWalkthroughDone();
+    if (walkthroughModal) walkthroughModal.classList.remove('active');
+  }
+
+  function advanceWalkthrough() {
+    if (walkthroughIndex < walkthroughSteps.length - 1) {
+      walkthroughIndex += 1;
+      renderWalkthroughStep();
+    } else {
+      closeWalkthrough();
+    }
+  }
+
+  function renderWalkthroughStep() {
+    if (!walkthroughModal || walkthroughSteps.length === 0) return;
+
+    const total = walkthroughSteps.length;
+    const current = walkthroughSteps[walkthroughIndex];
+
+    wtStepBadge.textContent = `Step ${walkthroughIndex + 1} of ${total}`;
+
+    // Dots
+    wtDots.innerHTML = '';
+    for (let i = 0; i < total; i++) {
+      const dot = document.createElement('span');
+      dot.className = 'wt-dot';
+      if (i === walkthroughIndex) dot.classList.add('active');
+      else if (i < walkthroughIndex) dot.classList.add('done');
+      wtDots.appendChild(dot);
+    }
+
+    wtBody.innerHTML = '';
+    wtFooter.innerHTML = '';
+
+    if (current.id === 'install') {
+      const iconHtml = `
+        <div class="wt-icon-wrap">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+            <line x1="12" y1="18" x2="12.01" y2="18"></line>
+          </svg>
+        </div>`;
+
+      if (isIOS) {
+        wtBody.innerHTML = `
+          ${iconHtml}
+          <h3 id="wt-title" class="wt-title">Install Phlo as an App</h3>
+          <p class="wt-desc">Add Phlo to your Home Screen for full-screen offline access and safer browser storage.</p>
+          <div class="wt-list">
+            <div class="wt-list-item"><span class="wt-list-num">1</span><div><strong>Tap Share</strong>In Safari, tap the Share icon (square with ↑ arrow).</div></div>
+            <div class="wt-list-item"><span class="wt-list-num">2</span><div><strong>Add to Home Screen</strong>Scroll down and tap <em>Add to Home Screen</em>, then tap <em>Add</em>.</div></div>
+          </div>`;
+      } else if (deferredInstallPrompt) {
+        wtBody.innerHTML = `
+          ${iconHtml}
+          <h3 id="wt-title" class="wt-title">Install Phlo on Your Device</h3>
+          <p class="wt-desc">Install Phlo as an app for offline access, one-tap launch, and persistent local storage.</p>`;
+      } else {
+        wtBody.innerHTML = `
+          ${iconHtml}
+          <h3 id="wt-title" class="wt-title">Install Phlo as an App</h3>
+          <p class="wt-desc">Use your browser's menu (<strong>⋮ → Install app</strong> or <strong>Add to Home screen</strong>) to install Phlo for offline use and safer storage.</p>`;
+      }
+
+      if (deferredInstallPrompt) {
+        const installBtn = document.createElement('button');
+        installBtn.className = 'btn btn-primary btn-full';
+        installBtn.textContent = 'Install Phlo App';
+        installBtn.addEventListener('click', async () => {
+          if (!deferredInstallPrompt) return;
+          deferredInstallPrompt.prompt();
+          const choice = await deferredInstallPrompt.userChoice;
+          deferredInstallPrompt = null;
+          if (choice && choice.outcome === 'accepted') {
+            isAppInstalled = true;
+          }
+          advanceWalkthrough();
+        });
+        wtFooter.appendChild(installBtn);
+
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'btn btn-secondary btn-full';
+        nextBtn.textContent = 'Continue in Browser';
+        nextBtn.addEventListener('click', advanceWalkthrough);
+        wtFooter.appendChild(nextBtn);
+      } else {
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'btn btn-primary btn-full';
+        nextBtn.textContent = walkthroughIndex < total - 1 ? 'Next' : 'Done';
+        nextBtn.addEventListener('click', advanceWalkthrough);
+        wtFooter.appendChild(nextBtn);
+      }
+    } else if (current.id === 'link-file') {
+      const isLinked = !!activeFileHandle;
+      wtBody.innerHTML = `
+        <div class="wt-icon-wrap">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+        </div>
+        <h3 id="wt-title" class="wt-title">Link Your Backup File</h3>
+        <p class="wt-desc">Link <code>${BACKUP_FILENAME}</code> once. Every time you log or remove a period, Phlo updates this file automatically in the background, even if your browser's data is cleared.</p>
+        ${isLinked ? `<div class="wt-status-pill">✓ Linked to ${activeFileHandle.name}</div>` : ''}`;
+
+      const linkBtn = document.createElement('button');
+      linkBtn.className = 'btn btn-primary btn-full';
+      linkBtn.textContent = isLinked ? `Continue (${activeFileHandle.name} linked)` : `Link ${BACKUP_FILENAME}`;
+      linkBtn.addEventListener('click', async () => {
+        if (activeFileHandle) {
+          advanceWalkthrough();
+          return;
+        }
+        const ok = await linkSaveFile();
+        if (ok) advanceWalkthrough();
+      });
+      wtFooter.appendChild(linkBtn);
+
+      if (!isLinked && hasOpenFSA) {
+        const loadBtn = document.createElement('button');
+        loadBtn.className = 'btn btn-outline btn-full';
+        loadBtn.textContent = 'Load & Link Existing File';
+        loadBtn.addEventListener('click', async () => {
+          const ok = await linkExistingFile();
+          if (ok) advanceWalkthrough();
+        });
+        wtFooter.appendChild(loadBtn);
+      }
+
+      if (!isLinked) {
+        const laterBtn = document.createElement('button');
+        laterBtn.className = 'btn btn-secondary btn-full';
+        laterBtn.textContent = 'Continue Without Linking';
+        laterBtn.addEventListener('click', advanceWalkthrough);
+        wtFooter.appendChild(laterBtn);
+
+        const note = document.createElement('p');
+        note.className = 'wt-note';
+        note.textContent = 'To guarantee nothing gets lost, Phlo will prompt you to link when you log a period.';
+        wtFooter.appendChild(note);
+      }
+    } else if (current.id === 'tutorial') {
+      let storageTip = '';
+      if (hasFSA) {
+        storageTip = `Saved in your browser's storage and auto-written to your linked <code>${BACKUP_FILENAME}</code> file wherever you placed it.`;
+      } else if (isIOS) {
+        storageTip = `Saved in your browser's storage, plus the iOS Files menu opens on every log so you can save <code>${BACKUP_FILENAME}</code> (tip: save in <strong>On My iPhone → phlo</strong>, iOS remembers your last folder).`;
+      } else {
+        storageTip = `Saved in your browser's storage. You can export <code>${BACKUP_FILENAME}</code> anytime from the menu.`;
+      }
+
+      wtBody.innerHTML = `
+        <div class="wt-icon-wrap">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+          </svg>
+        </div>
+        <h3 id="wt-title" class="wt-title">How Phlo Works</h3>
+        <div class="wt-list">
+          <div class="wt-list-item"><span class="wt-list-num">1</span><div><strong>Log a period</strong>Tap the pink <strong>+</strong> button, pick the first day of your period, and confirm. Phlo highlights 5 days automatically.</div></div>
+          <div class="wt-list-item"><span class="wt-list-num">2</span><div><strong>Remove a period</strong>Open the calendar, tap the highlighted start date, and choose <strong>Remove</strong>.</div></div>
+          <div class="wt-list-item"><span class="wt-list-num">3</span><div><strong>Where your data is stored</strong>${storageTip}</div></div>
+          <div class="wt-list-item"><span class="wt-list-num">4</span><div><strong>Move to another device</strong>Open the top-left <strong>☰ Menu</strong> to scan a QR Code, copy a sync link, or load your <code>${BACKUP_FILENAME}</code> file on the new device.</div></div>
+        </div>`;
+
+      const startBtn = document.createElement('button');
+      startBtn.className = 'btn btn-primary btn-full';
+      startBtn.textContent = 'Get Started';
+      startBtn.addEventListener('click', closeWalkthrough);
+      wtFooter.appendChild(startBtn);
+    }
+  }
+
+  if (wtSkipBtn) {
+    wtSkipBtn.addEventListener('click', closeWalkthrough);
+  }
+
+  if (openWalkthroughBtn) {
+    openWalkthroughBtn.addEventListener('click', () => {
+      drawerBackdrop.classList.remove('active');
+      openWalkthrough();
+    });
   }
 
   // --- Export to Calendar (.ics) ---
@@ -1045,14 +1754,7 @@
     icsContent.push('END:VCALENDAR');
 
     const blob = new Blob([icsContent.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `phlo-calendar-${getTodayISO()}.ics`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(blob, `phlo-calendar-${getTodayISO()}.ics`);
     showToast('Calendar .ics downloaded!');
   });
 
@@ -1060,7 +1762,10 @@
   clearAllDataBtn.addEventListener('click', async () => {
     if (confirm('Are you sure you want to clear all logged periods? This cannot be undone unless you have a backup file.')) {
       periods = [];
-      await saveState();
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+      } catch (e) {}
+      await saveState({ skipFileWrite: true });
       showToast('All period data cleared.');
       drawerBackdrop.classList.remove('active');
     }
