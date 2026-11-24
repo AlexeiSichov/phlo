@@ -1,4 +1,4 @@
-const CACHE_NAME = 'phlo-cache-v6';
+const CACHE_NAME = 'phlo-cache-v7';
 const DATA_CACHE_NAME = 'phlo-user-data-v1';
 const ASSETS_TO_CACHE = [
   './',

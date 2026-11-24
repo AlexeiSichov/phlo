@@ -1302,9 +1302,7 @@
       try {
         if (navigator.canShare({ files: [file] })) {
           await navigator.share({
-            files: [file],
-            title: BACKUP_FILENAME,
-            text: 'Save phlo-data.json to Files (On My iPhone → phlo)'
+            files: [file]
           });
           showToast(`Saved / shared ${BACKUP_FILENAME}!`);
           return true;
@@ -1334,9 +1332,7 @@
         const file = new File([blob], BACKUP_FILENAME, { type: 'application/json' });
         if (navigator.canShare({ files: [file] })) {
           await navigator.share({
-            files: [file],
-            title: BACKUP_FILENAME,
-            text: 'Phlo cycle tracker backup file'
+            files: [file]
           });
           showToast(`Saved / shared ${BACKUP_FILENAME}!`);
           return;
